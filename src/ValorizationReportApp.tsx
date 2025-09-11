@@ -149,43 +149,93 @@ export default function ValorizationReportApp() {
   };
 
   // ===== Calculations =====
-  const parsedRows = useMemo(() => {
-    const repDate = new Date(reportDate);
-    return rows.map((r) => {
-      const errors: Record<string, string> = {};
-      const hasAllRequired = r.empreendimento && r.unidade && r.valorAquisicao !== "" && r.dataAquisicao && r.valorAtual !== "";
-      const va = toDecimal(r.valorAquisicao);
-      const vc = toDecimal(r.valorAtual);
-      const dAq = r.dataAquisicao ? new Date(r.dataAquisicao) : null;
+type ParsedRow = {
+  id: number;
+  empreendimento: string;
+  unidade: string;
+  valorAquisicao: number;
+  dataAquisicao: string;
+  valorAtual: number;
+  dias: number;
+  valorizacaoPct: number;
+  lucroMes: number;
+  lucroPctMes: number;
+  validForTotals: boolean;
+  errors: Record<string, string>;
+};
 
-      if (!r.empreendimento) errors.empreendimento = "Obrigatório";
-      if (!r.unidade) errors.unidade = "Obrigatório";
-      if (r.valorAquisicao === "") errors.valorAquisicao = "Obrigatório";
-      if (r.valorAtual === "") errors.valorAtual = "Obrigatório";
-      if (!r.dataAquisicao) errors.dataAquisicao = "Obrigatório";
+const parsedRows = useMemo<ParsedRow[]>(() => {
+  const repDate = new Date(reportDate);
 
-      if (hasAllRequired) {
-        if (!isFinite(va) || va < 0) errors.valorAquisicao = "Valor inválido";
-        if (!isFinite(vc) || vc < 0) errors.valorAtual = "Valor inválido";
-      }
+  return rows.map((r) => {
+    const errors: Record<string, string> = {};
+    const hasAllRequired =
+      r.empreendimento &&
+      r.unidade &&
+      r.valorAquisicao !== "" &&
+      r.dataAquisicao &&
+      r.valorAtual !== "";
 
-      let ignore = false;
-      if (hasAllRequired) {
-        if (va === 0) { errors.valorAquisicao = "Informe o valor de aquisição (>0)"; ignore = true; }
-        if (dAq && repDate && dAq > repDate) { errors.dataAquisicao = "Data > Relatório. Corrija."; ignore = true; }
-      }
+    // Converta texto mascarado em número
+    const va = Number(toDecimal(r.valorAquisicao)); // aquisição (R$)
+    const vc = Number(toDecimal(r.valorAtual));     // valor atual (R$)
+    const dAq = r.dataAquisicao ? new Date(r.dataAquisicao) : null;
 
-      let dias = 1;
-      if (dAq && repDate && dAq <= repDate) dias = Math.max(1, Math.floor((repDate as any - dAq as any) / (1000*60*60*24)));
+    if (!r.empreendimento) errors.empreendimento = "Obrigatório";
+    if (!r.unidade) errors.unidade = "Obrigatório";
+    if (r.valorAquisicao === "") errors.valorAquisicao = "Obrigatório";
+    if (r.valorAtual === "") errors.valorAtual = "Obrigatório";
+    if (!r.dataAquisicao) errors.dataAquisicao = "Obrigatório";
 
-      const valorizacaoPct = va > 0 && isFinite(vc/va) ? (vc/va - 1) * 100 : NaN;
-      const lucroMes = isFinite(vc - va) ? (vc - va) / (dias/30) : NaN;
-      const lucroPctMes = va > 0 && isFinite(lucroMes/va) ? (lucroMes/va) * 100 : NaN;
-      const validForTotals = hasAllRequired && !ignore && isFinite(va) && isFinite(vc) && va > 0;
+    let ignore = false;
+    if (hasAllRequired) {
+      if (!Number.isFinite(va) || va < 0) errors.valorAquisicao = "Valor inválido";
+      if (!Number.isFinite(vc) || vc < 0) errors.valorAtual = "Valor inválido";
+      if (va === 0) { errors.valorAquisicao = "Informe o valor de aquisição (>0)"; ignore = true; }
+      if (dAq && repDate && dAq > repDate) { errors.dataAquisicao = "Data > Relatório. Corrija."; ignore = true; }
+    }
 
-      return { id: r.id, empreendimento: r.empreendimento, unidade: r.unidade, valorAquisicao: va, dataAquisicao: r.dataAquisicao, valorAtual: vc, dias, valorizacaoPct, lucroMes, lucroPctMes, validForTotals, errors };
-    });
-  }, [rows, reportDate]);
+    // === DIAS CORRIDOS (sempre número) ===
+    let dias: number = 1;
+    if (dAq && repDate && dAq <= repDate) {
+      const diffMs = repDate.getTime() - dAq.getTime(); // use getTime() => número
+      dias = Math.max(1, Math.floor(diffMs / 86_400_000)); // 1000*60*60*24
+    }
+
+    // === CÁLCULOS NUMÉRICOS ===
+    const valorizacaoPct =
+      va > 0 && Number.isFinite(vc / va) ? (vc / va - 1) * 100 : NaN;
+
+    const lucroMes =
+      Number.isFinite(vc - va) ? (vc - va) / (dias / 30) : NaN;
+
+    const lucroPctMes =
+      va > 0 && Number.isFinite(lucroMes / va) ? (lucroMes / va) * 100 : NaN;
+
+    const validForTotals =
+      hasAllRequired &&
+      !ignore &&
+      Number.isFinite(va) &&
+      Number.isFinite(vc) &&
+      va > 0;
+
+    return {
+      id: r.id,
+      empreendimento: r.empreendimento,
+      unidade: r.unidade,
+      valorAquisicao: va,
+      dataAquisicao: r.dataAquisicao,
+      valorAtual: vc,
+      dias,
+      valorizacaoPct,
+      lucroMes,
+      lucroPctMes,
+      validForTotals,
+      errors,
+    };
+  });
+}, [rows, reportDate]);
+
 
   const totals = useMemo(() => {
     const valid = parsedRows.filter((r) => r.validForTotals);
