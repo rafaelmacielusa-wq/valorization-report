@@ -21,7 +21,7 @@ const BRAND_BLUE = "#2F7DC0"; // Bicalho
 const INK = "#0F172A"; // Navy escuro
 const MUTED = "#6B7280";
 
-function BrandLogo({ kind, alt }) {
+function BrandLogo({ kind, alt }: { kind: "dif" | "bic"; alt: string }) {
   // Caminhos estáveis (sem new URL / import)
   const [idx, setIdx] = React.useState(0);
   const [failed, setFailed] = React.useState(false);
@@ -30,7 +30,7 @@ function BrandLogo({ kind, alt }) {
   const srcs = [
     `/logos/${file}`,
     origin ? `${origin}/logos/${file}` : null,
-  ].filter(Boolean);
+  ].filter(Boolean) as string[];
   const src = srcs[idx];
 
   if (failed || !src) {
@@ -52,15 +52,15 @@ function BrandLogo({ kind, alt }) {
 }
 
 // ===== Helpers =====
-const currencyBR = (n) => (isFinite(n) ? n : 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const percent2 = (n) => { if (!isFinite(n)) return "–"; const str = (Math.round(n * 100) / 100).toFixed(2).replace(".", ","); return `${str}%`; };
-const formatDateBR = (d) => { try { return new Date(d).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }); } catch { return ""; } };
-const ymd = (date) => { const pad = (x) => String(x).padStart(2, "0"); const d = new Date(date); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; };
+const currencyBR = (n: number) => (isFinite(n) ? n : 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const percent2 = (n: number) => { if (!isFinite(n)) return "–"; const str = (Math.round(n * 100) / 100).toFixed(2).replace(".", ","); return `${str}%`; };
+const formatDateBR = (d?: string) => { try { return new Date(d as string).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }); } catch { return ""; } };
+const ymd = (date: Date | string) => { const pad = (x: number) => String(x).padStart(2, "0"); const d = new Date(date); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; };
 const todayYMD = () => ymd(new Date());
-const toDecimal = (val) => { if (val === null || val === undefined) return NaN; const s = String(val).replace(/[^0-9,.-]/g, ""); if (s.includes(",") && s.includes(".")) { const lastComma = s.lastIndexOf(","); const lastDot = s.lastIndexOf("."); if (lastComma > lastDot) return parseFloat(s.replaceAll(".", "").replace(",", ".")); return parseFloat(s.replaceAll(",", "")); } return parseFloat(s.replace(",", ".")); };
+const toDecimal = (val: unknown) => { if (val === null || val === undefined) return NaN; const s = String(val).replace(/[^0-9,.-]/g, ""); if (s.includes(",") && s.includes(".")) { const lastComma = s.lastIndexOf(","); const lastDot = s.lastIndexOf("."); if (lastComma > lastDot) return parseFloat(s.replaceAll(".", "").replace(",", ".")); return parseFloat(s.replaceAll(",", "")); } return parseFloat(s.replace(",", ".")); };
 
 // ===== Row model =====
-const emptyRow = (id) => ({ id, empreendimento: "", unidade: "", valorAquisicao: "", dataAquisicao: "", valorAtual: "" });
+const emptyRow = (id: number) => ({ id, empreendimento: "", unidade: "", valorAquisicao: "", dataAquisicao: "", valorAtual: "" });
 
 // Opções fixas de empreendimentos (ordem solicitada)
 const EMP_OPTIONS = [
@@ -75,13 +75,33 @@ const EMP_OPTIONS = [
 ];
 
 // Sigla das unidades no cabeçalho (Hol 1480 => "Hol")
-function acronymFromEmp(empreendimento) {
+function acronymFromEmp(empreendimento: string) {
   if (!empreendimento) return "";
   const emp = empreendimento.trim();
   if (emp.toLowerCase() === "hol 1480") return "Hol";
   const parts = emp.split(' ').filter(Boolean);
   return parts.map((w) => (w[0] ? w[0].toUpperCase() : '')).join('');
 }
+
+// === Máscara BRL para inputs (sem regex para evitar conflitos de substituição) ===
+const maskBRL = (raw: string) => {
+  const s = String(raw ?? "");
+  const digits = s.split("").filter((ch) => ch >= "0" && ch <= "9").join("");
+  if (!digits) return "R$ 0,00";
+  const intPart = digits.slice(0, -2) || "0";
+  const cents = (digits.slice(-2) || "00").padStart(2, "0");
+  const n = Number(intPart);
+  const thousands = isFinite(n) ? n.toLocaleString("pt-BR") : "0";
+  return `R$ ${thousands},${cents}`;
+};
+const toMaskedBRL = (val: unknown) => {
+  const num = toDecimal(val);
+  return isFinite(num) ? currencyBR(num) : "R$ 0,00";
+};
+const ensureMasked = (val: unknown) => {
+  const s = String(val ?? "").trim();
+  return s.startsWith("R$") ? s : toMaskedBRL(s);
+};
 
 export default function ValorizationReportApp() {
   const [cliente, setCliente] = useState("");
@@ -91,20 +111,20 @@ export default function ValorizationReportApp() {
   const [showEditor, setShowEditor] = useState(true);
 
   const nextIdRef = useRef(2);
-  const reportRef = useRef(null);
+  const reportRef = useRef<HTMLDivElement | null>(null);
 
   // ===== Handlers =====
   const addRow = () => setRows((r) => [...r, emptyRow(nextIdRef.current++)]);
-  const removeRow = (id) => setRows((r) => (r.length === 1 ? r : r.filter((x) => x.id !== id)));
+  const removeRow = (id: number) => setRows((r) => (r.length === 1 ? r : r.filter((x) => x.id !== id)));
   const clearAll = () => { setRows([emptyRow(1)]); nextIdRef.current = 2; };
-  const handleRowChange = (id, field, value) => setRows((prev) => prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
+  const handleRowChange = (id: number, field: string, value: string) => setRows((prev) => prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
 
   const addSamples = () => {
     const samples = [
-      { empreendimento: "Vértice Barigui", unidade: "1205", valorAquisicao: "170000", dataAquisicao: "2024-06-15", valorAtual: "210000" },
-      { empreendimento: "Legacy Tower", unidade: "803", valorAquisicao: "220000", dataAquisicao: "2023-11-01", valorAtual: "260000" },
-      { empreendimento: "Yacht Tower", unidade: "1907", valorAquisicao: "150000", dataAquisicao: "2024-12-10", valorAtual: "165000" },
-      { empreendimento: "Infinity Tower", unidade: "305", valorAquisicao: "300000", dataAquisicao: "2025-03-01", valorAtual: "315000" },
+      { empreendimento: "Vértice Barigui", unidade: "1205", valorAquisicao: toMaskedBRL("170000"), dataAquisicao: "2024-06-15", valorAtual: toMaskedBRL("210000") },
+      { empreendimento: "Legacy Tower", unidade: "803", valorAquisicao: toMaskedBRL("220000"), dataAquisicao: "2023-11-01", valorAtual: toMaskedBRL("260000") },
+      { empreendimento: "Yacht Tower", unidade: "1907", valorAquisicao: toMaskedBRL("150000"), dataAquisicao: "2024-12-10", valorAtual: toMaskedBRL("165000") },
+      { empreendimento: "Infinity Tower", unidade: "305", valorAquisicao: toMaskedBRL("300000"), dataAquisicao: "2025-03-01", valorAtual: toMaskedBRL("315000") },
     ];
     setRows(samples.map((s, idx) => ({ id: idx + 1, ...s })));
     nextIdRef.current = samples.length + 1;
@@ -113,12 +133,12 @@ export default function ValorizationReportApp() {
   const addEdgeCases = () => {
     const repDate = reportDate;
     const extras = [
-      { empreendimento: "Teste Aquisição Zero", unidade: "AZ-01", valorAquisicao: "0", dataAquisicao: repDate, valorAtual: "1000" },
-      { empreendimento: "Teste Data Futura", unidade: "DF-01", valorAquisicao: "1000", dataAquisicao: ymd(new Date(new Date(repDate).getTime() + 5*24*3600*1000)), valorAtual: "1200" },
-      { empreendimento: "Teste Desvalorização", unidade: "DV-01", valorAquisicao: "200000", dataAquisicao: "2024-01-10", valorAtual: "180000" },
-      { empreendimento: "Teste Data Igual", unidade: "DI-01", valorAquisicao: "50000", dataAquisicao: repDate, valorAtual: "52000" },
-      { empreendimento: "Teste Vírgula Decimal", unidade: "VD-01", valorAquisicao: "150.000,50", dataAquisicao: "2024-02-20", valorAtual: "160.100,75" },
-      { empreendimento: "Teste Texto Inválido", unidade: "TX-01", valorAquisicao: "um valor", dataAquisicao: "2024-03-10", valorAtual: "200k" },
+      { empreendimento: "Teste Aquisição Zero", unidade: "AZ-01", valorAquisicao: ensureMasked("0"), dataAquisicao: repDate, valorAtual: ensureMasked("1000") },
+      { empreendimento: "Teste Data Futura", unidade: "DF-01", valorAquisicao: ensureMasked("1000"), dataAquisicao: ymd(new Date(new Date(repDate).getTime() + 5*24*3600*1000)), valorAtual: ensureMasked("1200") },
+      { empreendimento: "Teste Desvalorização", unidade: "DV-01", valorAquisicao: ensureMasked("200000"), dataAquisicao: "2024-01-10", valorAtual: ensureMasked("180000") },
+      { empreendimento: "Teste Data Igual", unidade: "DI-01", valorAquisicao: ensureMasked("50000"), dataAquisicao: repDate, valorAtual: ensureMasked("52000") },
+      { empreendimento: "Teste Vírgula Decimal", unidade: "VD-01", valorAquisicao: ensureMasked("150000,50"), dataAquisicao: "2024-02-20", valorAtual: ensureMasked("160100,75") },
+      { empreendimento: "Teste Texto Inválido", unidade: "TX-01", valorAquisicao: ensureMasked("200000"), dataAquisicao: "2024-03-10", valorAtual: ensureMasked("200000") },
     ];
     setRows((prev) => {
       const base = prev.length === 1 && !prev[0].empreendimento && !prev[0].unidade ? [] : prev;
@@ -132,7 +152,7 @@ export default function ValorizationReportApp() {
   const parsedRows = useMemo(() => {
     const repDate = new Date(reportDate);
     return rows.map((r) => {
-      const errors = {};
+      const errors: Record<string, string> = {};
       const hasAllRequired = r.empreendimento && r.unidade && r.valorAquisicao !== "" && r.dataAquisicao && r.valorAtual !== "";
       const va = toDecimal(r.valorAquisicao);
       const vc = toDecimal(r.valorAtual);
@@ -156,7 +176,7 @@ export default function ValorizationReportApp() {
       }
 
       let dias = 1;
-      if (dAq && repDate && dAq <= repDate) dias = Math.max(1, Math.floor((repDate - dAq) / (1000*60*60*24)));
+      if (dAq && repDate && dAq <= repDate) dias = Math.max(1, Math.floor((repDate as any - dAq as any) / (1000*60*60*24)));
 
       const valorizacaoPct = va > 0 && isFinite(vc/va) ? (vc/va - 1) * 100 : NaN;
       const lucroMes = isFinite(vc - va) ? (vc - va) / (dias/30) : NaN;
@@ -222,7 +242,7 @@ export default function ValorizationReportApp() {
       setIsExporting(true); // esconde editor/tooltip
       const el = reportRef.current;
       if (!el) return;
-      if (document.fonts?.ready) await document.fonts.ready;
+      if ((document as any).fonts?.ready) await (document as any).fonts.ready;
       await new Promise((r) => setTimeout(r, 300));
       const canvas = await html2canvas(el, { backgroundColor: "#FFFFFF", scale: window.devicePixelRatio > 1 ? 2.5 : 2, useCORS: true, allowTaint: true, logging: false, scrollX: -window.scrollX, scrollY: -window.scrollY, windowWidth: el.scrollWidth, windowHeight: el.scrollHeight });
       const imgData = canvas.toDataURL("image/png");
@@ -238,7 +258,7 @@ export default function ValorizationReportApp() {
       console.error("PDF export error (primary)", err);
       try {
         const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-        await pdf.html(reportRef.current, { html2canvas: { backgroundColor: "#FFFFFF", scale: 2, useCORS: true, allowTaint: true }, callback: (doc) => doc.save(`relatorio_valorizacao_${(cliente || "cliente").replaceAll(" ", "_")}_${reportDate}.pdf`) });
+        await (pdf as any).html(reportRef.current, { html2canvas: { backgroundColor: "#FFFFFF", scale: 2, useCORS: true, allowTaint: true }, callback: (doc: jsPDF) => doc.save(`relatorio_valorizacao_${(cliente || "cliente").replaceAll(" ", "_")}_${reportDate}.pdf`) });
       } catch (err2) {
         console.error("PDF export error (fallback)", err2);
         alert("Não foi possível gerar o PDF. Recarregue a página e tente novamente.");
@@ -279,7 +299,7 @@ export default function ValorizationReportApp() {
         .card { background:#FFFFFF; border:1px solid #E5E7EB; border-radius:16px; padding:16px; box-shadow:0 0 0 1px rgba(0,0,0,0.01); }
         .report { background:#FFFFFF; border-radius:16px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); padding:24px; }
         .a4 { width: 794px; }
-        .logoImg { height:46px; width:auto; object-fit:contain; image-rendering:auto; }
+        .logoImg { height:68px; width:auto; object-fit:contain; image-rendering:auto; }
 
         /* Editor (inputs) */
         .editor { border:1px solid #E5E7EB; border-radius:16px; padding:12px; background:#FFFFFF; }
@@ -288,6 +308,12 @@ export default function ValorizationReportApp() {
         .tableWrap { overflow:auto; border:1px solid #E5E7EB; border-radius:16px; }
         table { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; }
         thead { background:#F3F6FA; color:var(--muted); }
+/* Estilo escuro e contorno preto para a TABELA DE RESULTADOS (relatório) */
+.reportTable .tableWrap { border:1px solid #000; }
+.reportTable thead { background:#0F172A; color:#FFFFFF; }
+.reportTable table, .reportTable th, .reportTable td { border-color:#000 !important; }
+.reportTable th, .reportTable td { border-top:1px solid #000; }
+.reportTable tbody tr:nth-child(even){ background:#F9FAFB; }
         th, td { padding:12px; text-align:left; border-top:1px solid #E5E7EB; vertical-align:top; }
         thead th { border-top:none; font-weight:600; }
         tbody tr:nth-child(even){ background:#FCFCFD; }
@@ -295,9 +321,12 @@ export default function ValorizationReportApp() {
         .num { text-align:right; font-variant-numeric: tabular-nums; }
         .chip-warn { display:inline-block; padding:2px 6px; border-radius:9999px; background:#FFF1F2; color:#DC2626; font-size:11px; }
 
-        .chart { position:relative; width:100%; height:420px; }
+        .chart { position:relative; width:100%; height:520px; }
         .helper { color:var(--muted); font-size:11px; margin-top:8px; }
         @media (max-width: 960px) { .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; } }
+/* Header stats barra grossa */
+.headerStats { display:grid; grid-template-columns: 1.2fr .8fr 1.5fr .9fr; gap:12px; padding:12px 0; border-top:3px solid var(--ink); border-bottom:3px solid var(--ink); align-items:end; }
+.headerStats .vstrong { font-weight:800; }
         /* Some editor on PDF */
         ${isExporting ? `.editor{display:none}` : ``}
       `}</style>
@@ -357,9 +386,9 @@ export default function ValorizationReportApp() {
                         </select>
                       </td>
                       <td><input className="input" value={row.unidade} onChange={(ev) => handleRowChange(row.id, "unidade", ev.target.value)} placeholder="Ex.: 1205" /></td>
-                      <td><input type="text" inputMode="decimal" className="input" value={row.valorAquisicao} onChange={(ev) => handleRowChange(row.id, "valorAquisicao", ev.target.value)} placeholder="0,00" /></td>
+                      <td><input type="text" inputMode="decimal" className="input" value={row.valorAquisicao || "R$ 0,00"} onChange={(ev) => handleRowChange(row.id, "valorAquisicao", maskBRL(ev.target.value))} placeholder="R$ 0,00" /></td>
                       <td><input type="date" className="input" value={row.dataAquisicao} onChange={(ev) => handleRowChange(row.id, "dataAquisicao", ev.target.value)} /></td>
-                      <td><input type="text" inputMode="decimal" className="input" value={row.valorAtual} onChange={(ev) => handleRowChange(row.id, "valorAtual", ev.target.value)} placeholder="0,00" /></td>
+                      <td><input type="text" inputMode="decimal" className="input" value={row.valorAtual || "R$ 0,00"} onChange={(ev) => handleRowChange(row.id, "valorAtual", maskBRL(ev.target.value))} placeholder="R$ 0,00" /></td>
                       <td><button className="btn ghost" title="Remover linha" onClick={() => removeRow(row.id)}>×</button></td>
                     </tr>
                   ))}
@@ -380,17 +409,30 @@ export default function ValorizationReportApp() {
           <BrandLogo kind="bic" alt="Bicalho" />
         </div>
 
-        {/* Valor total de contratos destacado logo abaixo do título */}
+        {/* Nome do cliente destacado logo abaixo do título */}
         <div style={{ textAlign: "center", marginTop: 12 }}>
-          <div className="klabel" style={{ marginBottom: 4 }}>Valor Total de Contratos (R$)</div>
-          <div style={{ fontSize: 28, fontWeight: 800 }}>{currencyBR(totals.valorTotalContratos)}</div>
+          <div className="klabel" style={{ marginBottom: 4 }}>Cliente</div>
+          <div style={{ fontSize: 24, fontWeight: 800 }}>{cliente || "–"}</div>
         </div>
 
-        {/* Quadro 2x2 com tipografia premium */}
-        <div className="grid grid-2" style={{ gap: 12, marginTop: 18 }}>
-          <div><div className="klabel">Cliente</div><div title={cliente || ""}>{cliente || "–"}</div></div>
-          <div><div className="klabel">Total de Unidades</div><div>{totals.totalUnidades} <span className="muted" style={{ fontSize: 12 }}>— {totals.listaSiglas || "–"}</span></div></div>
-          <div><div className="klabel">Relatório do dia</div><div>{formatDateBR(reportDate)}</div></div>
+        {/* Cabeçalho em barra (estilo do PDF referência) */}
+        <div className="headerStats">
+          <div>
+            <div className="klabel">Valor Total de Contratos (R$)</div>
+            <div className="vstrong">{currencyBR(totals.valorTotalContratos)}</div>
+          </div>
+          <div>
+            <div className="klabel">Total de Unidades</div>
+            <div className="vstrong">{String(totals.totalUnidades).padStart(2, '0')}</div>
+          </div>
+          <div>
+            <div className="klabel">Nº das Unidades</div>
+            <div className="vstrong">{totals.listaSiglas || "–"}</div>
+          </div>
+          <div>
+            <div className="klabel">Relatório do dia</div>
+            <div className="vstrong">{formatDateBR(reportDate)}</div>
+          </div>
         </div>
 
         {/* Cards resumo fortes */}
@@ -406,22 +448,22 @@ export default function ValorizationReportApp() {
           <div className="chart">
             <ResponsiveContainer>
               <PieChart>
-                <Pie data={pieData} dataKey="value" nameKey="name" innerRadius={100} outerRadius={155} paddingAngle={0} startAngle={90} endAngle={450} isAnimationActive={!isExporting}>
+                <Pie data={pieData} dataKey="value" nameKey="name" innerRadius={120} outerRadius={195} paddingAngle={0} startAngle={90} endAngle={450} isAnimationActive={!isExporting}>
                   {pieData.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={index === 0 ? BRAND_BLUE : BRAND_ORANGE} />
                   ))}
                 </Pie>
-                {!isExporting && <Tooltip formatter={(v) => currencyBR(v)} />}
+                {!isExporting && <Tooltip formatter={(v: number) => currencyBR(v)} />}
               </PieChart>
             </ResponsiveContainer>
             <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-              <div style={{ fontWeight: 800, fontSize: 34, color: BRAND_BLUE }} className={totals.valorizacaoAtualPct < 0 ? "danger" : ""}>{percent2(totals.valorizacaoAtualPct)}</div>
+              <div style={{ fontWeight: 800, fontSize: 40, color: totals.valorizacaoAtualPct < 0 ? "#DC2626" : BRAND_ORANGE }}>{percent2(totals.valorizacaoAtualPct)}</div>
             </div>
           </div>
         </div>
 
         {/* Tabela RELATÓRIO (somente leitura) */}
-        <div className="mt-6">
+        <div className="mt-6 reportTable">
           <div className="tableWrap">
             <table>
               <thead>
@@ -439,20 +481,20 @@ export default function ValorizationReportApp() {
               <tbody>
                 {rows.map((row, idx) => {
                   const pr = parsedRows[idx];
-                  const e = pr?.errors || {};
+                  const e = pr?.errors || {} as any;
                   const isValid = pr?.validForTotals;
-                  const warn = (txt) => <span className="chip-warn">{txt}</span>;
+                  const warn = (txt: string) => <span className="chip-warn">{txt}</span>;
 
                   return (
                     <tr key={row.id}>
                       <td>{row.empreendimento || warn("Obrigatório")}</td>
                       <td>{row.unidade || warn("Obrigatório")}</td>
-                      <td className="num">{isValid || isFinite(pr?.valorAquisicao) ? currencyBR(pr?.valorAquisicao) : warn(e.valorAquisicao || "Obrigatório")}</td>
+                      <td className="num">{isValid || isFinite(pr?.valorAquisicao as number) ? currencyBR(pr?.valorAquisicao as number) : warn(e.valorAquisicao || "Obrigatório")}</td>
                       <td>{row.dataAquisicao ? formatDateBR(row.dataAquisicao) : warn(e.dataAquisicao || "Obrigatório")}</td>
-                      <td className="num">{isValid || isFinite(pr?.valorAtual) ? currencyBR(pr?.valorAtual) : warn(e.valorAtual || "Obrigatório")}</td>
-                      <td className="num">{isValid ? (<span className={pr.valorizacaoPct < 0 ? "danger" : ""}>{percent2(pr.valorizacaoPct)}</span>) : <span className="muted">–</span>}</td>
-                      <td className="num">{isValid ? (<span className={pr.lucroMes < 0 ? "danger" : ""}>{currencyBR(pr.lucroMes)}</span>) : <span className="muted">–</span>}</td>
-                      <td className="num">{isValid ? (<span className={pr.lucroPctMes < 0 ? "danger" : ""}>{percent2(pr.lucroPctMes)}</span>) : <span className="muted">–</span>}</td>
+                      <td className="num">{isValid || isFinite(pr?.valorAtual as number) ? currencyBR(pr?.valorAtual as number) : warn(e.valorAtual || "Obrigatório")}</td>
+                      <td className="num">{isValid ? (<span className={(pr!.valorizacaoPct as number) < 0 ? "danger" : ""}>{percent2(pr!.valorizacaoPct as number)}</span>) : <span className="muted">–</span>}</td>
+                      <td className="num">{isValid ? (<span className={(pr!.lucroMes as number) < 0 ? "danger" : ""}>{currencyBR(pr!.lucroMes as number)}</span>) : <span className="muted">–</span>}</td>
+                      <td className="num">{isValid ? (<span className={(pr!.lucroPctMes as number) < 0 ? "danger" : ""}>{percent2(pr!.lucroPctMes as number)}</span>) : <span className="muted">–</span>}</td>
                     </tr>
                   );
                 })}
