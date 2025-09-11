@@ -1,6 +1,10 @@
+// src/main.tsx
 import React from "react";
 import { createRoot } from "react-dom/client";
-import App from "./index"; // seu componente default do canvas
+import ValorizationReportApp from "./ValorizationReportApp";
 
-const root = createRoot(document.getElementById("root")!);
-root.render(<App />);
+createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
+    <ValorizationReportApp />
+  </React.StrictMode>
+);
