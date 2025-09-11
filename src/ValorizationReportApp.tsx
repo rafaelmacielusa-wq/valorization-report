@@ -1,23 +1,68 @@
 import React, { useMemo, useRef, useState } from "react";
-import {
-  PieChart,
-  Pie,
-  Cell,
-  ResponsiveContainer,
-  Legend,
-  Tooltip,
-} from "recharts";
+import { PieChart, Pie, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
+import * as XLSX from "xlsx";
 
-/* =====================  Cores / marcas  ===================== */
-const COLOR_NAVY = "#0F1B2D";
-const COLOR_BORDER = "#E8ECF1";
-const COLOR_ORANGE = "#F56A00"; // Diferencial
-const COLOR_BICALHO = "#2F78B7"; // azul Bicalho
-const COLOR_BG = "#FFFFFF";
+/**
+ * VERSÃO PREMIUM (foco PDF alto padrão)
+ * - Logos fixas (sem upload), sem distorção.
+ * - Tipografia Inter com hierarquia forte, muito respiro e alinhamentos precisos.
+ * - Informações do cabeçalho em grade 2x2 (como o PDF referência), com títulos pequenos em caps.
+ * - Cards robustos, gráfico donut elegante (azul Bicalho + laranja Diferencial), centro destacado.
+ * - Tabela de RELATÓRIO (somente leitura) separada do EDITOR (inputs). Editor some no PDF.
+ * - Exportação PDF A4 retrato, alta nitidez (scale 2.5) e sem tooltips.
+ * - Mantidos os testes: “Adicionar 4 unidades de exemplo” e “Adicionar casos (edge)”.
+ */
 
-/* =====================  Opções de empreendimentos  ===================== */
+// ===== Marca e assets fixos =====
+const BRAND_ORANGE = "#FF6A00"; // Diferencial
+const BRAND_BLUE = "#2F7DC0"; // Bicalho
+const INK = "#0F172A"; // Navy escuro
+const MUTED = "#6B7280";
+
+function BrandLogo({ kind, alt }: { kind: "dif" | "bic"; alt: string }) {
+  // Caminhos estáveis (sem new URL / import)
+  const [idx, setIdx] = React.useState(0);
+  const [failed, setFailed] = React.useState(false);
+  const file = kind === "dif" ? "diferencial.png" : "bicalho.png";
+  const origin = (typeof window !== "undefined" && window.location && window.location.origin) || "";
+  const srcs = [
+    `/logos/${file}`,
+    origin ? `${origin}/logos/${file}` : null,
+  ].filter(Boolean) as string[];
+  const src = srcs[idx];
+
+  if (failed || !src) {
+    return (
+      <div style={{height:48,minWidth:120,display:"flex",alignItems:"center",justifyContent:"center",border:"1px dashed #E5E7EB",borderRadius:8,color:MUTED,fontSize:12}}>
+        {alt}
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className="logoImg"
+      onError={() => { if (idx + 1 < srcs.length) setIdx(idx + 1); else setFailed(true); }}
+    />
+  );
+}
+
+// ===== Helpers =====
+const currencyBR = (n: number) => (isFinite(n) ? n : 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const percent2 = (n: number) => { if (!isFinite(n)) return "–"; const str = (Math.round(n * 100) / 100).toFixed(2).replace(".", ","); return `${str}%`; };
+const formatDateBR = (d?: string) => { try { return new Date(d as string).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }); } catch { return ""; } };
+const ymd = (date: Date | string) => { const pad = (x: number) => String(x).padStart(2, "0"); const d = new Date(date); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; };
+const todayYMD = () => ymd(new Date());
+const toDecimal = (val: unknown) => { if (val === null || val === undefined) return NaN; const s = String(val).replace(/[^0-9,.-]/g, ""); if (s.includes(",") && s.includes(".")) { const lastComma = s.lastIndexOf(","); const lastDot = s.lastIndexOf("."); if (lastComma > lastDot) return parseFloat(s.replaceAll(".", "").replace(",", ".")); return parseFloat(s.replaceAll(",", "")); } return parseFloat(s.replace(",", ".")); };
+
+// ===== Row model =====
+const emptyRow = (id: number) => ({ id, empreendimento: "", unidade: "", valorAquisicao: "", dataAquisicao: "", valorAtual: "" });
+
+// Opções fixas de empreendimentos (ordem solicitada)
 const EMP_OPTIONS = [
   "Start Residence",
   "Diamond Tower",
@@ -29,128 +74,88 @@ const EMP_OPTIONS = [
   "Vértice Barigui",
 ];
 
-/* =====================  Tipos  ===================== */
-type Row = {
-  id: number;
-  empreendimento: string;
-  unidade: string;
-  valorAquisicao: string; // guardado com máscara "R$ 0,00"
-  dataAquisicao: string; // yyyy-mm-dd
-  valorAtual: string; // guardado com máscara "R$ 0,00"
-};
-
-type ParsedRow = {
-  id: number;
-  empreendimento: string;
-  unidade: string;
-  valorAquisicao: number;
-  dataAquisicao: string;
-  valorAtual: number;
-  dias: number;
-  valorizacaoPct: number;
-  lucroMes: number;
-  lucroPctMes: number;
-  validForTotals: boolean;
-  errors: Record<string, string>;
-};
-
-/* =====================  Helpers  ===================== */
-const emptyRow = (id: number): Row => ({
-  id,
-  empreendimento: "",
-  unidade: "",
-  valorAquisicao: "R$ 0,00",
-  dataAquisicao: "",
-  valorAtual: "R$ 0,00",
-});
-
-function toDecimal(val: string | number): number {
-  if (typeof val === "number") return val;
-  if (!val) return NaN;
-  // remove tudo que não seja dígito, ponto, vírgula ou sinal
-  const cleaned = String(val).replace(/[^\d,.-]/g, "");
-  // remove pontos de milhar
-  const noThousands = cleaned.replace(/\./g, "");
-  // troca vírgula por ponto (decimal)
-  const normalized = noThousands.replace(/,/g, ".");
-  const n = parseFloat(normalized);
-  return Number.isFinite(n) ? n : NaN;
-}
-
-function maskCurrencyInput(raw: string): string {
-  // mantém apenas dígitos
-  const digits = (raw || "").replace(/\D/g, "");
-  if (digits.length === 0) return "R$ 0,00";
-  const int = digits.slice(0, -2);
-  const cents = digits.slice(-2).padStart(2, "0");
-  const intFmt = (int || "0").replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  return `R$ ${intFmt},${cents}`;
-}
-
-function formatCurrencyBR(n: number): string {
-  if (!Number.isFinite(n)) return "R$ 0,00";
-  return n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-}
-
-function formatDateBR(yyyyMMdd: string): string {
-  if (!yyyyMMdd) return "";
-  const [y, m, d] = yyyyMMdd.split("-");
-  if (!y || !m || !d) return yyyyMMdd;
-  return `${d}/${m}/${y}`;
-}
-
-function initialsFromEmp(empreendimento: string): string {
+// Sigla das unidades no cabeçalho (Hol 1480 => "Hol")
+function acronymFromEmp(empreendimento: string) {
   if (!empreendimento) return "";
-  if (/^hol\s*1480/i.test(empreendimento) || /hol\s*1480/i.test(empreendimento)) {
-    return "Hol";
-  }
-  const words = empreendimento
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((w) => w[0]?.toUpperCase() || "");
-  return words.join("");
+  const emp = empreendimento.trim();
+  if (emp.toLowerCase() === "hol 1480") return "Hol";
+  const parts = emp.split(' ').filter(Boolean);
+  return parts.map((w) => (w[0] ? w[0].toUpperCase() : '')).join('');
 }
 
-/* =====================  Componente  ===================== */
+// === Máscara BRL para inputs (sem regex para evitar conflitos de substituição) ===
+const maskBRL = (raw: string) => {
+  const s = String(raw ?? "");
+  const digits = s.split("").filter((ch) => ch >= "0" && ch <= "9").join("");
+  if (!digits) return "R$ 0,00";
+  const intPart = digits.slice(0, -2) || "0";
+  const cents = (digits.slice(-2) || "00").padStart(2, "0");
+  const n = Number(intPart);
+  const thousands = isFinite(n) ? n.toLocaleString("pt-BR") : "0";
+  return `R$ ${thousands},${cents}`;
+};
+const toMaskedBRL = (val: unknown) => {
+  const num = toDecimal(val);
+  return isFinite(num) ? currencyBR(num) : "R$ 0,00";
+};
+const ensureMasked = (val: unknown) => {
+  const s = String(val ?? "").trim();
+  return s.startsWith("R$") ? s : toMaskedBRL(s);
+};
+
 export default function ValorizationReportApp() {
-  // Cabeçalho
-  const [cliente, setCliente] = useState<string>("Pedro");
-  const [reportDate, setReportDate] = useState<string>(() => {
-    const d = new Date();
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
-  });
+  const [cliente, setCliente] = useState("");
+  const [reportDate, setReportDate] = useState(todayYMD());
+  const [rows, setRows] = useState([emptyRow(1)]);
+  const [isExporting, setIsExporting] = useState(false);
+  const [showEditor, setShowEditor] = useState(true);
 
-  // Linhas
-  const [rows, setRows] = useState<Row[]>([
-    emptyRow(1),
-    emptyRow(2),
-    emptyRow(3),
-    emptyRow(4),
-  ]);
+  const nextIdRef = useRef(2);
+  const reportRef = useRef<HTMLDivElement | null>(null);
 
-  const nextId = useMemo(
-    () => (rows.length ? Math.max(...rows.map((r) => r.id)) + 1 : 1),
-    [rows]
-  );
+  // ===== Handlers =====
+  const addRow = () => setRows((r) => [...r, emptyRow(nextIdRef.current++)]);
+  const removeRow = (id: number) => setRows((r) => (r.length === 1 ? r : r.filter((x) => x.id !== id)));
+  const clearAll = () => { setRows([emptyRow(1)]); nextIdRef.current = 2; };
+  const handleRowChange = (id: number, field: string, value: string) => setRows((prev) => prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
 
-  /* --------- Cálculos por linha (SEM erros TS) --------- */
-  const parsedRows = useMemo<ParsedRow[]>(() => {
+  const addSamples = () => {
+    const samples = [
+      { empreendimento: "Vértice Barigui", unidade: "1205", valorAquisicao: toMaskedBRL("170000"), dataAquisicao: "2024-06-15", valorAtual: toMaskedBRL("210000") },
+      { empreendimento: "Legacy Tower", unidade: "803", valorAquisicao: toMaskedBRL("220000"), dataAquisicao: "2023-11-01", valorAtual: toMaskedBRL("260000") },
+      { empreendimento: "Yacht Tower", unidade: "1907", valorAquisicao: toMaskedBRL("150000"), dataAquisicao: "2024-12-10", valorAtual: toMaskedBRL("165000") },
+      { empreendimento: "Infinity Tower", unidade: "305", valorAquisicao: toMaskedBRL("300000"), dataAquisicao: "2025-03-01", valorAtual: toMaskedBRL("315000") },
+    ];
+    setRows(samples.map((s, idx) => ({ id: idx + 1, ...s })));
+    nextIdRef.current = samples.length + 1;
+  };
+
+  const addEdgeCases = () => {
+    const repDate = reportDate;
+    const extras = [
+      { empreendimento: "Teste Aquisição Zero", unidade: "AZ-01", valorAquisicao: ensureMasked("0"), dataAquisicao: repDate, valorAtual: ensureMasked("1000") },
+      { empreendimento: "Teste Data Futura", unidade: "DF-01", valorAquisicao: ensureMasked("1000"), dataAquisicao: ymd(new Date(new Date(repDate).getTime() + 5*24*3600*1000)), valorAtual: ensureMasked("1200") },
+      { empreendimento: "Teste Desvalorização", unidade: "DV-01", valorAquisicao: ensureMasked("200000"), dataAquisicao: "2024-01-10", valorAtual: ensureMasked("180000") },
+      { empreendimento: "Teste Data Igual", unidade: "DI-01", valorAquisicao: ensureMasked("50000"), dataAquisicao: repDate, valorAtual: ensureMasked("52000") },
+      { empreendimento: "Teste Vírgula Decimal", unidade: "VD-01", valorAquisicao: ensureMasked("150000,50"), dataAquisicao: "2024-02-20", valorAtual: ensureMasked("160100,75") },
+      { empreendimento: "Teste Texto Inválido", unidade: "TX-01", valorAquisicao: ensureMasked("200000"), dataAquisicao: "2024-03-10", valorAtual: ensureMasked("200000") },
+    ];
+    setRows((prev) => {
+      const base = prev.length === 1 && !prev[0].empreendimento && !prev[0].unidade ? [] : prev;
+      const mapped = extras.map((s, i) => ({ id: nextIdRef.current + i, ...s }));
+      nextIdRef.current += mapped.length;
+      return [...base, ...mapped];
+    });
+  };
+
+  // ===== Calculations =====
+  const parsedRows = useMemo(() => {
     const repDate = new Date(reportDate);
-
     return rows.map((r) => {
       const errors: Record<string, string> = {};
-      const hasAllRequired =
-        r.empreendimento &&
-        r.unidade &&
-        r.valorAquisicao !== "" &&
-        r.dataAquisicao &&
-        r.valorAtual !== "";
-
-      const va = Number(toDecimal(r.valorAquisicao)); // aquisição
-      const vc = Number(toDecimal(r.valorAtual)); // atual
+      const hasAllRequired = r.empreendimento && r.unidade && r.valorAquisicao !== "" && r.dataAquisicao && r.valorAtual !== "";
+      const va = toDecimal(r.valorAquisicao);
+      const vc = toDecimal(r.valorAtual);
       const dAq = r.dataAquisicao ? new Date(r.dataAquisicao) : null;
 
       if (!r.empreendimento) errors.empreendimento = "Obrigatório";
@@ -159,498 +164,353 @@ export default function ValorizationReportApp() {
       if (r.valorAtual === "") errors.valorAtual = "Obrigatório";
       if (!r.dataAquisicao) errors.dataAquisicao = "Obrigatório";
 
+      if (hasAllRequired) {
+        if (!isFinite(va) || va < 0) errors.valorAquisicao = "Valor inválido";
+        if (!isFinite(vc) || vc < 0) errors.valorAtual = "Valor inválido";
+      }
+
       let ignore = false;
       if (hasAllRequired) {
-        if (!Number.isFinite(va) || va < 0)
-          errors.valorAquisicao = "Valor inválido";
-        if (!Number.isFinite(vc) || vc < 0) errors.valorAtual = "Valor inválido";
-        if (va === 0) {
-          errors.valorAquisicao = "Informe o valor de aquisição (>0)";
-          ignore = true;
-        }
-        if (dAq && repDate && dAq > repDate) {
-          errors.dataAquisicao = "Data > Relatório. Corrija.";
-          ignore = true;
-        }
+        if (va === 0) { errors.valorAquisicao = "Informe o valor de aquisição (>0)"; ignore = true; }
+        if (dAq && repDate && dAq > repDate) { errors.dataAquisicao = "Data > Relatório. Corrija."; ignore = true; }
       }
 
-      // DIAS (sempre número)
       let dias = 1;
-      if (dAq && repDate && dAq <= repDate) {
-        const diffMs = repDate.getTime() - dAq.getTime();
-        dias = Math.max(1, Math.floor(diffMs / 86_400_000));
-      }
+      if (dAq && repDate && dAq <= repDate) dias = Math.max(1, Math.floor((repDate as any - dAq as any) / (1000*60*60*24)));
 
-      // CÁLCULOS
-      const valorizacaoPct =
-        va > 0 && Number.isFinite(vc / va) ? (vc / va - 1) * 100 : NaN;
+      const valorizacaoPct = va > 0 && isFinite(vc/va) ? (vc/va - 1) * 100 : NaN;
+      const lucroMes = isFinite(vc - va) ? (vc - va) / (dias/30) : NaN;
+      const lucroPctMes = va > 0 && isFinite(lucroMes/va) ? (lucroMes/va) * 100 : NaN;
+      const validForTotals = hasAllRequired && !ignore && isFinite(va) && isFinite(vc) && va > 0;
 
-      const lucroMes =
-        Number.isFinite(vc - va) ? (vc - va) / (dias / 30) : NaN;
-
-      const lucroPctMes =
-        va > 0 && Number.isFinite(lucroMes / va) ? (lucroMes / va) * 100 : NaN;
-
-      const validForTotals = !!(
-        hasAllRequired &&
-        !ignore &&
-        Number.isFinite(va) &&
-        Number.isFinite(vc) &&
-        va > 0
-      );
-
-      return {
-        id: r.id,
-        empreendimento: r.empreendimento,
-        unidade: r.unidade,
-        valorAquisicao: va,
-        dataAquisicao: r.dataAquisicao,
-        valorAtual: vc,
-        dias,
-        valorizacaoPct,
-        lucroMes,
-        lucroPctMes,
-        validForTotals,
-        errors,
-      };
+      return { id: r.id, empreendimento: r.empreendimento, unidade: r.unidade, valorAquisicao: va, dataAquisicao: r.dataAquisicao, valorAtual: vc, dias, valorizacaoPct, lucroMes, lucroPctMes, validForTotals, errors };
     });
   }, [rows, reportDate]);
 
-  /* --------- Agregados --------- */
-  const valid = parsedRows.filter((r) => r.validForTotals);
-  const totalUnidades = valid.length;
-  const valorContratos = valid.reduce((s, r) => s + r.valorAquisicao, 0);
-  const valorAtualImoveis = valid.reduce((s, r) => s + r.valorAtual, 0);
-  const lucroValorizacao = valorAtualImoveis - valorContratos;
-  const valorizacaoAtualPct =
-    valorContratos > 0
-      ? ((valorAtualImoveis / valorContratos - 1) * 100)
-      : 0;
+  const totals = useMemo(() => {
+    const valid = parsedRows.filter((r) => r.validForTotals);
+    const totalUnidades = valid.length;
+    const listaUnidades = valid.map((r) => r.unidade).join(", ");
+    const valorTotalContratos = valid.reduce((s, r) => s + r.valorAquisicao, 0);
+    const valorAtualImoveis = valid.reduce((s, r) => s + r.valorAtual, 0);
+    const lucroValorizacao = valorAtualImoveis - valorTotalContratos;
+    const valorizacaoAtualPct = valorTotalContratos > 0 ? (valorAtualImoveis/valorTotalContratos - 1) * 100 : 0;
+    const listaSiglas = valid.map((r) => `${acronymFromEmp(r.empreendimento)}${r.unidade}`).join(", ");
+    return { totalUnidades, listaUnidades, listaSiglas, valorTotalContratos, valorAtualImoveis, lucroValorizacao, valorizacaoAtualPct };
+  }, [parsedRows]);
 
-  // lista ex.: VB1205, LT803 ...
-  const listaUnidades = valid
-    .map((r) => `${initialsFromEmp(r.empreendimento)}${r.unidade}`)
-    .join(", ");
+  const pieData = useMemo(() => {
+    const lucroPositivo = Math.max(0, totals.lucroValorizacao);
+    return [
+      { name: "Valor Total de Contratos (R$)", value: totals.valorTotalContratos },
+      { name: "Lucro na Valorização (R$)", value: lucroPositivo },
+    ];
+  }, [totals]);
 
-  /* --------- Handlers --------- */
-  function handleRowChange(
-    id: number,
-    field: keyof Row,
-    value: string
-  ) {
-    setRows((prev) =>
-      prev.map((r) =>
-        r.id === id ? { ...r, [field]: value } : r
-      )
-    );
-  }
+  // ===== Exports =====
+  const exportCSV = () => {
+    const header = ["Empreendimento","Unidade","Valor do imóvel na aquisição (R$)","Aquisição (Data de aquisição)","Valor atual (R$)","% de valorização","Lucro líquido ao mês (R$/mês)","% Lucro líquido"];
+    const lines = parsedRows.map((r) => [r.empreendimento, r.unidade, currencyBR(r.valorAquisicao), r.dataAquisicao ? formatDateBR(r.dataAquisicao) : "", currencyBR(r.valorAtual), percent2(r.valorizacaoPct), currencyBR(r.lucroMes), percent2(r.lucroPctMes)]);
+    const sep = ";";
+    const csv = [header.join(sep), ...lines.map((l) => l.map((s) => `"${String(s).replaceAll('"','""')}"`).join(sep))].join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `tabela_relatorio_valorizacao_${(cliente || "cliente").replaceAll(" ", "_")}_${reportDate}.csv`;
+    a.click();
+  };
 
-  function removeRow(id: number) {
-    setRows((prev) => prev.filter((r) => r.id !== id));
-  }
+  const exportXLSX = () => {
+    const sheetData = parsedRows.map((r) => ({
+      Empreendimento: r.empreendimento,
+      Unidade: r.unidade,
+      "Valor do imóvel na aquisição (R$)": currencyBR(r.valorAquisicao),
+      "Aquisição (Data de aquisição)": r.dataAquisicao ? formatDateBR(r.dataAquisicao) : "",
+      "Valor atual (R$)": currencyBR(r.valorAtual),
+      "% de valorização": percent2(r.valorizacaoPct),
+      "Lucro líquido ao mês (R$/mês)": currencyBR(r.lucroMes),
+      "% Lucro líquido": percent2(r.lucroPctMes),
+    }));
+    const ws = XLSX.utils.json_to_sheet(sheetData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Tabela");
+    XLSX.writeFile(wb, `tabela_relatorio_valorizacao_${(cliente || "cliente").replaceAll(" ", "_")}_${reportDate}.xlsx`);
+  };
 
-  function addRow() {
-    setRows((prev) => [...prev, emptyRow(nextId)]);
-  }
-
-  function addExamples() {
-    const today = new Date();
-    const y = today.getFullYear();
-    const pad = (n: number) => String(n).padStart(2, "0");
-
-    const mkDate = (yyyy: number, mm: number, dd: number) =>
-      `${yyyy}-${pad(mm)}-${pad(dd)}`;
-
-    setRows([
-      {
-        id: 1,
-        empreendimento: "Vértice Barigui",
-        unidade: "1205",
-        valorAquisicao: maskCurrencyInput("17000000"),
-        dataAquisicao: mkDate(y - 1, 6, 15),
-        valorAtual: maskCurrencyInput("21000000"),
-      },
-      {
-        id: 2,
-        empreendimento: "Legacy Tower",
-        unidade: "803",
-        valorAquisicao: maskCurrencyInput("22000000"),
-        dataAquisicao: mkDate(y - 1, 11, 1),
-        valorAtual: maskCurrencyInput("26000000"),
-      },
-      {
-        id: 3,
-        empreendimento: "Yacht Tower",
-        unidade: "1907",
-        valorAquisicao: maskCurrencyInput("15000000"),
-        dataAquisicao: mkDate(y, 12, 10),
-        valorAtual: maskCurrencyInput("16500000"),
-      },
-      {
-        id: 4,
-        empreendimento: "Infinity Tower",
-        unidade: "305",
-        valorAquisicao: maskCurrencyInput("30000000"),
-        dataAquisicao: mkDate(y, 3, 1),
-        valorAtual: maskCurrencyInput("31500000"),
-      },
-    ]);
-  }
-
-  /* --------- Exportar PDF --------- */
-  const pdfRef = useRef<HTMLDivElement>(null);
-
-  async function exportPDF() {
-    if (!pdfRef.current) return;
-    const node = pdfRef.current;
-
-    const canvas = await html2canvas(node, {
-      backgroundColor: COLOR_BG,
-      scale: 2,
-      useCORS: true,
-    });
-
-    const imgData = canvas.toDataURL("image/png");
-    const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-
-    // dimensiona mantendo proporção
-    const imgWidth = pageWidth;
-    const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-    let y = 0;
-    if (imgHeight <= pageHeight) {
-      pdf.addImage(imgData, "PNG", 0, y, imgWidth, imgHeight);
-    } else {
-      // paginar se for mais alto
-      let remaining = imgHeight;
-      let position = 0;
-      while (remaining > 0) {
-        pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
-        remaining -= pageHeight;
-        if (remaining > 0) {
-          pdf.addPage();
-          position -= pageHeight;
-        }
+  const exportPDF = async () => {
+    try {
+      setIsExporting(true); // esconde editor/tooltip
+      const el = reportRef.current;
+      if (!el) return;
+      if ((document as any).fonts?.ready) await (document as any).fonts.ready;
+      await new Promise((r) => setTimeout(r, 300));
+      const canvas = await html2canvas(el, { backgroundColor: "#FFFFFF", scale: window.devicePixelRatio > 1 ? 2.5 : 2, useCORS: true, allowTaint: true, logging: false, scrollX: -window.scrollX, scrollY: -window.scrollY, windowWidth: el.scrollWidth, windowHeight: el.scrollHeight });
+      const imgData = canvas.toDataURL("image/png");
+      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const ratio = Math.min(pageWidth / canvas.width, pageHeight / canvas.height);
+      const imgWidth = canvas.width * ratio, imgHeight = canvas.height * ratio;
+      const x = (pageWidth - imgWidth) / 2, y = (pageHeight - imgHeight) / 2;
+      pdf.addImage(imgData, "PNG", x, y, imgWidth, imgHeight, undefined, "FAST");
+      pdf.save(`relatorio_valorizacao_${(cliente || "cliente").replaceAll(" ", "_")}_${reportDate}.pdf`);
+    } catch (err) {
+      console.error("PDF export error (primary)", err);
+      try {
+        const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+        await (pdf as any).html(reportRef.current, { html2canvas: { backgroundColor: "#FFFFFF", scale: 2, useCORS: true, allowTaint: true }, callback: (doc: jsPDF) => doc.save(`relatorio_valorizacao_${(cliente || "cliente").replaceAll(" ", "_")}_${reportDate}.pdf`) });
+      } catch (err2) {
+        console.error("PDF export error (fallback)", err2);
+        alert("Não foi possível gerar o PDF. Recarregue a página e tente novamente.");
       }
-    }
+    } finally { setIsExporting(false); }
+  };
 
-    pdf.save("relatorio_valorizacao.pdf");
-  }
-
-  /* --------- Gráfico (rosca) --------- */
-  const donutData = [
-    { name: "Valor Total de Contratos (R$)", value: Math.max(valorContratos, 0) },
-    { name: "Lucro na Valorização (R$)", value: Math.max(lucroValorizacao, 0) },
-  ];
-  const donutColors = [COLOR_BICALHO, COLOR_ORANGE];
-
-  /* =====================  UI  ===================== */
+  // ===== UI =====
   return (
-    <div
-      style={{
-        fontFamily: "Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial",
-        color: COLOR_NAVY,
-        background: COLOR_BG,
-        minHeight: "100vh",
-      }}
-    >
+    <div className="app">
       <style>{`
-        .container { max-width: 980px; margin: 0 auto; padding: 24px; }
-        .card { border: 1px solid ${COLOR_BORDER}; background: #fff; border-radius: 12px; padding: 18px 20px; }
-        .h-label { font-size: 12px; letter-spacing: .08em; color: #5F6B7A; margin-bottom: 8px; text-transform: uppercase; }
-        .h-value { font-weight: 800; font-size: 22px; }
-        .big-value { font-weight: 900; font-size: 34px; }
-        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-        .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
-        .line { height: 8px; border-radius: 8px; background: linear-gradient(90deg, ${COLOR_ORANGE}, ${COLOR_NAVY}, ${COLOR_BICALHO}); opacity: .9; }
-        table { width: 100%; border-collapse: separate; border-spacing: 0 10px; }
-        th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #5F6B7A; text-align: left; padding: 6px 10px; }
-        td { padding: 6px 10px; }
-        .row { background: #F9FAFB; border: 1px solid ${COLOR_BORDER}; border-radius: 10px; }
-        .invalid { outline: 2px solid #E74C3C; outline-offset: -2px; border-radius: 6px; }
-        .money-input { width: 100%; border: 1px solid ${COLOR_BORDER}; border-radius: 8px; padding: 10px 12px; font-weight: 600; }
-        .text-input  { width: 100%; border: 1px solid ${COLOR_BORDER}; border-radius: 8px; padding: 10px 12px; }
-        .select-input{ width: 100%; border: 1px solid ${COLOR_BORDER}; border-radius: 8px; padding: 10px 12px; background: #fff; }
-        .actions { display: flex; gap: 10px; flex-wrap: wrap; }
-        .btn { border: none; border-radius: 10px; padding: 10px 14px; font-weight: 700; cursor: pointer; }
-        .btn-primary { background: ${COLOR_BICALHO}; color: #fff; }
-        .btn-secondary { background: #EDF2F7; color: ${COLOR_NAVY}; }
-        .logos { display:flex; align-items:center; justify-content:space-between; margin-top: 16px; }
-        .logos img { height: 68px; object-fit: contain; }
-        .divider { border-bottom: 3px solid ${COLOR_NAVY}; opacity: .7; margin: 8px 0 16px; }
-        .footer-note { margin-top: 10px; font-size: 12px; color:#5F6B7A; }
-        .pdf-table { border: 1px solid #000; border-radius: 10px; overflow: hidden; }
-        .pdf-table table { border-collapse: collapse; border-spacing: 0; }
-        .pdf-table th { background: #253246; color: #fff; padding: 10px; }
-        .pdf-table td { border-top: 1px solid #000; border-left: 1px solid #000; padding: 10px; }
-        .pdf-table tr td:first-child { border-left: none; }
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+        :root { --accent1:${BRAND_ORANGE}; --accent2:${BRAND_BLUE}; --ink:${INK}; --muted:${MUTED}; }
+        .app { min-height:100vh; width:100%; background:#FAFAFA; color:var(--ink); padding:24px; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Helvetica Neue"; }
+        .container { max-width: 820px; margin: 0 auto; }
+        .grid { display:grid; gap:16px; }
+        .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .row { display:flex; gap:8px; align-items:center; }
+        .mt-6 { margin-top:24px; }
+        .mb-6 { margin-bottom:24px; }
+        .ml-auto { margin-left:auto; }
+        .muted { color:var(--muted); }
+        .danger { color:#DC2626; }
+        .title { font-weight:800; letter-spacing:0.05em; font-size:36px; }
+        .text-sm { font-size:12px; }
+        .value { font-size:26px; font-weight:800; }
+        .brandbar { height:6px; background: linear-gradient(90deg, var(--accent1), var(--accent2)); border-radius:6px; }
+        .klabel { display:block; font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px; }
+        .input { width:100%; height:36px; padding:0 10px; border:1px solid #E5E7EB; border-radius:10px; background:#FFFFFF; color:var(--ink); }
+        .input:focus { outline:2px solid rgba(47,125,192,0.2); border-color:#93C5FD; }
+        .input.invalid { border-color:#FCA5A5; background:#FFF1F2; }
+        .btn { height:36px; padding:0 12px; border-radius:9999px; border:1px solid transparent; background: var(--accent1); color:#FFFFFF; cursor:pointer; font-weight:700; }
+        .btn.secondary { background:#F3F4F6; color:var(--ink); border-color:#E5E7EB; }
+        .btn.ghost { background:transparent; color:var(--ink); border:1px solid #E5E7EB; }
+        .btn.small { height:30px; padding:0 10px; font-weight:600; }
+        .card { background:#FFFFFF; border:1px solid #E5E7EB; border-radius:16px; padding:16px; box-shadow:0 0 0 1px rgba(0,0,0,0.01); }
+        .report { background:#FFFFFF; border-radius:16px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); padding:24px; }
+        .a4 { width: 794px; }
+        .logoImg { height:68px; width:auto; object-fit:contain; image-rendering:auto; }
+
+        /* Editor (inputs) */
+        .editor { border:1px solid #E5E7EB; border-radius:16px; padding:12px; background:#FFFFFF; }
+
+        /* Tabela do RELATÓRIO (read-only elegante) */
+        .tableWrap { overflow:auto; border:1px solid #E5E7EB; border-radius:16px; }
+        table { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; }
+        thead { background:#F3F6FA; color:var(--muted); }
+/* Estilo escuro e contorno preto para a TABELA DE RESULTADOS (relatório) */
+.reportTable .tableWrap { border:1px solid #000; }
+.reportTable thead { background:#0F172A; color:#FFFFFF; }
+.reportTable table, .reportTable th, .reportTable td { border-color:#000 !important; }
+.reportTable th, .reportTable td { border-top:1px solid #000; }
+.reportTable tbody tr:nth-child(even){ background:#F9FAFB; }
+        th, td { padding:12px; text-align:left; border-top:1px solid #E5E7EB; vertical-align:top; }
+        thead th { border-top:none; font-weight:600; }
+        tbody tr:nth-child(even){ background:#FCFCFD; }
+        tr:hover { background:#F8FAFC; }
+        .num { text-align:right; font-variant-numeric: tabular-nums; }
+        .chip-warn { display:inline-block; padding:2px 6px; border-radius:9999px; background:#FFF1F2; color:#DC2626; font-size:11px; }
+
+        .chart { position:relative; width:100%; height:520px; }
+        .helper { color:var(--muted); font-size:11px; margin-top:8px; }
+        @media (max-width: 960px) { .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; } }
+/* Header stats barra grossa */
+.headerStats { display:grid; grid-template-columns: 1.2fr .8fr 1.5fr .9fr; gap:12px; padding:12px 0; border-top:3px solid var(--ink); border-bottom:3px solid var(--ink); align-items:end; }
+.headerStats .vstrong { font-weight:800; }
+        /* Some editor on PDF */
+        ${isExporting ? `.editor{display:none}` : ``}
       `}</style>
 
-      <div className="container" ref={pdfRef}>
-        {/* linha topo */}
-        <div className="line" />
-
-        {/* cabeçalho com logos e título */}
-        <div className="logos">
-          <img src="/logos/diferencial.png" alt="Diferencial" />
-          <h1 style={{ fontSize: 36, letterSpacing: ".04em" }}>VALORIZAÇÃO</h1>
-          <img src="/logos/bicalho.png" alt="Bicalho" />
-        </div>
-
-        {/* Valor total destacado */}
-        <div style={{ textAlign: "center", marginTop: 8 }}>
-          <div className="h-label">Valor Total de Contratos (R$)</div>
-          <div className="big-value">{formatCurrencyBR(valorContratos)}</div>
-        </div>
-
-        {/* linha separadora */}
-        <div className="divider" />
-
-        {/* Infos cliente / unidades / data */}
-        <div className="grid-3" style={{ marginBottom: 16 }}>
-          <div>
-            <div className="h-label">Cliente</div>
-            <div className="h-value">{cliente || "—"}</div>
+      {/* Controles essenciais */}
+      <div className="container mb-6">
+        <div className="grid grid-4" style={{ alignItems: "end" }}>
+          <div style={{ gridColumn: "span 2" }}>
+            <label className="klabel">Cliente</label>
+            <input className="input" placeholder="Nome do cliente" value={cliente} onChange={(e) => setCliente(e.target.value)} />
           </div>
-
           <div>
-            <div className="h-label">Total de Unidades</div>
-            <div className="h-value">
-              {String(totalUnidades).padStart(2, "0")}{" "}
-              {listaUnidades ? ` — ${listaUnidades}` : ""}
+            <label className="klabel">Relatório do dia</label>
+            <input type="date" className="input" value={reportDate} onChange={(e) => setReportDate(e.target.value)} />
+          </div>
+          <div className="row" style={{justifyContent:"flex-end"}}>
+            <button className="btn small secondary" onClick={() => setShowEditor((v) => !v)}>{showEditor ? "Ocultar editor" : "Mostrar editor"}</button>
+          </div>
+        </div>
+
+        <div className="row mt-6" style={{ flexWrap: "wrap", gap: 8 }}>
+          <button onClick={addRow} className="btn">Adicionar unidade</button>
+          <button onClick={addSamples} className="btn secondary">Adicionar 4 unidades de exemplo</button>
+          <button onClick={addEdgeCases} className="btn secondary">Adicionar casos de teste (edge)</button>
+          <button onClick={clearAll} className="btn ghost">Limpar tudo</button>
+          <div className="ml-auto row" style={{ gap: 8 }}>
+            <button onClick={exportPDF} className="btn">Exportar PDF</button>
+            <button onClick={exportCSV} className="btn secondary">Exportar CSV</button>
+            <button onClick={exportXLSX} className="btn secondary">Exportar XLSX</button>
+          </div>
+        </div>
+
+        {showEditor && (
+          <div className="editor mt-6">
+            <div className="klabel" style={{marginBottom:8}}>Editor de unidades (não aparece no PDF)</div>
+            <div className="tableWrap" style={{borderRadius:12}}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Empreendimento</th>
+                    <th>Unidade</th>
+                    <th>Valor do imóvel na aquisição (R$)</th>
+                    <th>Aquisição (Data de aquisição)</th>
+                    <th>Valor atual (R$)</th>
+                    <th style={{width:60}}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <tr key={row.id}>
+                      <td>
+                        <select className="input" value={row.empreendimento} onChange={(ev) => handleRowChange(row.id, "empreendimento", ev.target.value)}>
+                          <option value="">Selecione...</option>
+                          {EMP_OPTIONS.map((opt) => (
+                            <option key={opt} value={opt}>{opt}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td><input className="input" value={row.unidade} onChange={(ev) => handleRowChange(row.id, "unidade", ev.target.value)} placeholder="Ex.: 1205" /></td>
+                      <td><input type="text" inputMode="decimal" className="input" value={row.valorAquisicao || "R$ 0,00"} onChange={(ev) => handleRowChange(row.id, "valorAquisicao", maskBRL(ev.target.value))} placeholder="R$ 0,00" /></td>
+                      <td><input type="date" className="input" value={row.dataAquisicao} onChange={(ev) => handleRowChange(row.id, "dataAquisicao", ev.target.value)} /></td>
+                      <td><input type="text" inputMode="decimal" className="input" value={row.valorAtual || "R$ 0,00"} onChange={(ev) => handleRowChange(row.id, "valorAtual", maskBRL(ev.target.value))} placeholder="R$ 0,00" /></td>
+                      <td><button className="btn ghost" title="Remover linha" onClick={() => removeRow(row.id)}>×</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
+        )}
+      </div>
 
+      {/* ÁREA DE RELATÓRIO (somente leitura) */}
+      <div ref={reportRef} className="container report a4">
+        <div className="brandbar" />
+        {/* Cabeçalho elegante */}
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 16, marginTop: 12, flexWrap: "wrap" }}>
+          <BrandLogo kind="dif" alt="Diferencial" />
+          <h1 className="title">VALORIZAÇÃO</h1>
+          <BrandLogo kind="bic" alt="Bicalho" />
+        </div>
+
+        {/* Nome do cliente destacado logo abaixo do título */}
+        <div style={{ textAlign: "center", marginTop: 12 }}>
+          <div className="klabel" style={{ marginBottom: 4 }}>Cliente</div>
+          <div style={{ fontSize: 24, fontWeight: 800 }}>{cliente || "–"}</div>
+        </div>
+
+        {/* Cabeçalho em barra (estilo do PDF referência) */}
+        <div className="headerStats">
           <div>
-            <div className="h-label">Relatório do dia</div>
-            <div className="h-value">{formatDateBR(reportDate)}</div>
+            <div className="klabel">Valor Total de Contratos (R$)</div>
+            <div className="vstrong">{currencyBR(totals.valorTotalContratos)}</div>
+          </div>
+          <div>
+            <div className="klabel">Total de Unidades</div>
+            <div className="vstrong">{String(totals.totalUnidades).padStart(2, '0')}</div>
+          </div>
+          <div>
+            <div className="klabel">Nº das Unidades</div>
+            <div className="vstrong">{totals.listaSiglas || "–"}</div>
+          </div>
+          <div>
+            <div className="klabel">Relatório do dia</div>
+            <div className="vstrong">{formatDateBR(reportDate)}</div>
           </div>
         </div>
 
-        {/* Cards resumo */}
-        <div className="card" style={{ marginBottom: 12 }}>
-          <div className="h-label">Valor Atual Imóveis (R$)</div>
-          <div className="h-value">{formatCurrencyBR(valorAtualImoveis)}</div>
-        </div>
-        <div className="card" style={{ marginBottom: 12 }}>
-          <div className="h-label">Lucro na Valorização (R$)</div>
-          <div className="h-value">{formatCurrencyBR(lucroValorizacao)}</div>
-        </div>
-        <div className="card" style={{ marginBottom: 28 }}>
-          <div className="h-label">Valorização Atual (%)</div>
-          <div className="h-value">
-            {Number.isFinite(valorizacaoAtualPct)
-              ? `${valorizacaoAtualPct.toFixed(2)}%`
-              : "—"}
-          </div>
+        {/* Cards resumo fortes */}
+        <div className="grid grid-3 mt-6">
+          <div className="card"><div className="klabel">Valor Atual Imóveis (R$)</div><div className="value">{currencyBR(totals.valorAtualImoveis)}</div></div>
+          <div className="card"><div className="klabel">Lucro na Valorização (R$)</div><div className={`value ${totals.lucroValorizacao < 0 ? "danger" : ""}`}>{currencyBR(totals.lucroValorizacao)}</div></div>
+          <div className="card"><div className="klabel">Valorização Atual (%)</div><div className={`value ${totals.valorizacaoAtualPct < 0 ? "danger" : ""}`}>{percent2(totals.valorizacaoAtualPct)}</div></div>
         </div>
 
-        {/* Gráfico (rosca grande) */}
-        <div className="card" style={{ padding: 24, marginBottom: 24 }}>
-          <div style={{ width: "100%", height: 360 }}>
+        {/* Gráfico donut refinado */}
+        <div className="mt-6">
+          <div className="klabel" style={{ marginBottom: 8 }}>Representação gráfica:</div>
+          <div className="chart">
             <ResponsiveContainer>
               <PieChart>
-                <Pie
-                  data={donutData}
-                  dataKey="value"
-                  nameKey="name"
-                  cx="50%"
-                  cy="50%"
-                  innerRadius="60%"
-                  outerRadius="85%"
-                  paddingAngle={2}
-                  stroke="#fff"
-                  strokeWidth={2}
-                >
-                  {donutData.map((entry, idx) => (
-                    <Cell key={idx} fill={donutColors[idx % donutColors.length]} />
+                <Pie data={pieData} dataKey="value" nameKey="name" innerRadius={120} outerRadius={195} paddingAngle={0} startAngle={90} endAngle={450} isAnimationActive={!isExporting}>
+                  {pieData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={index === 0 ? BRAND_BLUE : BRAND_ORANGE} />
                   ))}
                 </Pie>
-                {/* % central em laranja */}
-                <text
-                  x="50%"
-                  y="50%"
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  fontSize={28}
-                  fontWeight={900}
-                  fill={COLOR_ORANGE}
-                >
-                  {Number.isFinite(valorizacaoAtualPct)
-                    ? `${valorizacaoAtualPct.toFixed(2)}%`
-                    : "—"}
-                </text>
-                <Legend verticalAlign="bottom" />
-                <Tooltip
-                  formatter={(v: number) => formatCurrencyBR(v)}
-                />
+                {!isExporting && <Tooltip formatter={(v: number) => currencyBR(v)} />}
               </PieChart>
             </ResponsiveContainer>
+            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+              <div style={{ fontWeight: 800, fontSize: 40, color: totals.valorizacaoAtualPct < 0 ? "#DC2626" : BRAND_ORANGE }}>{percent2(totals.valorizacaoAtualPct)}</div>
+            </div>
           </div>
         </div>
 
-        {/* Editor (não sai no PDF) */}
-        <div className="card" style={{ marginBottom: 18 }}>
-          <div className="h-label">Editor de unidades (não aparece no PDF)</div>
-          <table>
-            <thead>
-              <tr>
-                <th>Empreendimento</th>
-                <th>Unidade</th>
-                <th>Valor do imóvel na aquisição (R$)</th>
-                <th>Aquisição (Data de aquisição)</th>
-                <th>Valor atual (R$)</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => {
-                const pr = parsedRows.find((p) => p.id === r.id);
-                const e = pr?.errors || {};
-                return (
-                  <tr key={r.id} className="row">
-                    <td>
-                      <select
-                        className={`select-input ${e.empreendimento ? "invalid" : ""}`}
-                        value={r.empreendimento}
-                        onChange={(ev) =>
-                          handleRowChange(r.id, "empreendimento", ev.target.value)
-                        }
-                      >
-                        <option value="">Selecione...</option>
-                        {EMP_OPTIONS.map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td>
-                      <input
-                        className={`text-input ${e.unidade ? "invalid" : ""}`}
-                        placeholder="Ex.: 1205"
-                        value={r.unidade}
-                        onChange={(ev) => handleRowChange(r.id, "unidade", ev.target.value)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className={`money-input ${e.valorAquisicao ? "invalid" : ""}`}
-                        inputMode="numeric"
-                        value={r.valorAquisicao}
-                        onChange={(ev) =>
-                          handleRowChange(
-                            r.id,
-                            "valorAquisicao",
-                            maskCurrencyInput(ev.target.value)
-                          )
-                        }
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className={`text-input ${e.dataAquisicao ? "invalid" : ""}`}
-                        type="date"
-                        value={r.dataAquisicao}
-                        onChange={(ev) =>
-                          handleRowChange(r.id, "dataAquisicao", ev.target.value)
-                        }
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className={`money-input ${e.valorAtual ? "invalid" : ""}`}
-                        inputMode="numeric"
-                        value={r.valorAtual}
-                        onChange={(ev) =>
-                          handleRowChange(
-                            r.id,
-                            "valorAtual",
-                            maskCurrencyInput(ev.target.value)
-                          )
-                        }
-                      />
-                    </td>
-                    <td>
-                      <button
-                        className="btn btn-secondary"
-                        onClick={() => removeRow(r.id)}
-                        title="Remover linha"
-                      >
-                        ×
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        {/* Tabela RELATÓRIO (somente leitura) */}
+        <div className="mt-6 reportTable">
+          <div className="tableWrap">
+            <table>
+              <thead>
+                <tr>
+                  <th style={{ width: 280 }}>Empreendimento</th>
+                  <th style={{ width: 120 }}>Unidade</th>
+                  <th className="num" style={{ width: 220 }}>Valor do imóvel na aquisição (R$)</th>
+                  <th style={{ width: 180 }}>Aquisição (Data de aquisição)</th>
+                  <th className="num" style={{ width: 180 }}>Valor atual (R$)</th>
+                  <th className="num" style={{ width: 160 }}>% de valorização</th>
+                  <th className="num" style={{ width: 220 }}>Lucro líquido ao mês (R$/mês)</th>
+                  <th className="num" style={{ width: 160 }}>% Lucro líquido</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, idx) => {
+                  const pr = parsedRows[idx];
+                  const e = pr?.errors || {} as any;
+                  const isValid = pr?.validForTotals;
+                  const warn = (txt: string) => <span className="chip-warn">{txt}</span>;
 
-          <div className="actions" style={{ marginTop: 12 }}>
-            <button className="btn btn-secondary" onClick={addRow}>
-              + Adicionar linha
-            </button>
-            <button className="btn btn-secondary" onClick={addExamples}>
-              Adicionar 4 unidades de exemplo
-            </button>
+                  return (
+                    <tr key={row.id}>
+                      <td>{row.empreendimento || warn("Obrigatório")}</td>
+                      <td>{row.unidade || warn("Obrigatório")}</td>
+                      <td className="num">{isValid || isFinite(pr?.valorAquisicao as number) ? currencyBR(pr?.valorAquisicao as number) : warn(e.valorAquisicao || "Obrigatório")}</td>
+                      <td>{row.dataAquisicao ? formatDateBR(row.dataAquisicao) : warn(e.dataAquisicao || "Obrigatório")}</td>
+                      <td className="num">{isValid || isFinite(pr?.valorAtual as number) ? currencyBR(pr?.valorAtual as number) : warn(e.valorAtual || "Obrigatório")}</td>
+                      <td className="num">{isValid ? (<span className={(pr!.valorizacaoPct as number) < 0 ? "danger" : ""}>{percent2(pr!.valorizacaoPct as number)}</span>) : <span className="muted">–</span>}</td>
+                      <td className="num">{isValid ? (<span className={(pr!.lucroMes as number) < 0 ? "danger" : ""}>{currencyBR(pr!.lucroMes as number)}</span>) : <span className="muted">–</span>}</td>
+                      <td className="num">{isValid ? (<span className={(pr!.lucroPctMes as number) < 0 ? "danger" : ""}>{percent2(pr!.lucroPctMes as number)}</span>) : <span className="muted">–</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="muted text-sm" style={{ marginTop: 12 }}>
+            Nº das unidades: <span style={{ color: INK, fontWeight: 600 }}>{totals.listaSiglas || "–"}</span>
           </div>
         </div>
+      </div>
 
-        {/* Tabela final para PDF (contornos pretos e cabeçalho escuro) */}
-        <div className="pdf-table">
-          <table>
-            <thead>
-              <tr>
-                <th>Empreendimento</th>
-                <th>Unidade</th>
-                <th>Valor do imóvel na aquisição (R$)</th>
-                <th>Aquisição (Data de aquisição)</th>
-                <th>Valor atual (R$)</th>
-                <th>% de valorização</th>
-                <th>Lucro líquido ao mês (R$/mês)</th>
-                <th>% Lucro líquido</th>
-              </tr>
-            </thead>
-            <tbody>
-              {parsedRows.map((r) => {
-                const na = (x: number) =>
-                  Number.isFinite(x) ? x : NaN;
-
-                const pct = na(r.valorizacaoPct);
-                const luc = na(r.lucroMes);
-                const pctMes = na(r.lucroPctMes);
-
-                return (
-                  <tr key={r.id}>
-                    <td>{r.empreendimento || "—"}</td>
-                    <td>{r.unidade || "—"}</td>
-                    <td>{formatCurrencyBR(r.valorAquisicao)}</td>
-                    <td>{formatDateBR(r.dataAquisicao)}</td>
-                    <td>{formatCurrencyBR(r.valorAtual)}</td>
-                    <td>{Number.isFinite(pct) ? `${pct.toFixed(2)}%` : "—"}</td>
-                    <td>{Number.isFinite(luc) ? formatCurrencyBR(luc) : "—"}</td>
-                    <td>{Number.isFinite(pctMes) ? `${pctMes.toFixed(2)}%` : "—"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Rodapé com lista de unidades */}
-        <div className="footer-note">
-          Nº das unidades: {listaUnidades || "—"}
-        </div>
-
-        {/* Ações */}
-        <div className="actions" style={{ marginTop: 16 }}>
-          <button className="btn btn-primary" onClick={exportPDF}>
-            Exportar PDF
-          </button>
-        </div>
+      {/* Rodapé explicativo */}
+      <div className="container helper">
+        Regras aplicadas: ignora linhas incompletas, valor de aquisição precisa ser &gt; 0, datas de aquisição futuras são invalidadas. Dias corridos = max(1, data do relatório - data de aquisição). Percentuais e moedas com 2 casas.
       </div>
     </div>
   );
