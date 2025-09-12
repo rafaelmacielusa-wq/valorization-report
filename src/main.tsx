@@ -1,9 +1,6 @@
 import React from "react";
-import ReactDOM from "react-dom/client";
-import ValorizationReportApp from "./ValorizationReportApp";
+import { createRoot } from "react-dom/client";
+import App from "./ValorizationReportApp";
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <ValorizationReportApp />
-  </React.StrictMode>
-);
+const root = createRoot(document.getElementById("root")!);
+root.render(<App />);
