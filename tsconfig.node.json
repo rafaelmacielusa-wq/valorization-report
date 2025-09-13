@@ -3,8 +3,7 @@
     "composite": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "resolveJsonModule": true,
-    "allowSyntheticDefaultImports": true
+    "types": ["vite/client"]
   },
   "include": ["vite.config.ts"]
 }
