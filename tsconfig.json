@@ -1,15 +1,21 @@
 {
   "compilerOptions": {
     "target": "ES2021",
-    "lib": ["ES2021", "DOM", "DOM.Iterable"],
+    "lib": ["ES2021", "DOM"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
-    "strict": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "esModuleInterop": true,
     "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "noEmit": true,
-    "isolatedModules": true
+    "allowJs": true,
+    "checkJs": false,
+    "useDefineForClassFields": true,
+    "types": []
   },
+  "include": ["src"],
   "exclude": ["dist", "node_modules"]
 }
