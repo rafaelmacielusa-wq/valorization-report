@@ -140,7 +140,7 @@ const EMP_OPTIONS = [
   "Yacht Tower",
   "Legacy Tower",
   "Infinity Tower",
-  "Vértice Barigui"
+  "Vértice Barigui",
   "Sette Batel Tower"
 ];
 
