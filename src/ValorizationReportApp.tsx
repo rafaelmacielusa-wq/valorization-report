@@ -141,6 +141,7 @@ const EMP_OPTIONS = [
   "Legacy Tower",
   "Infinity Tower",
   "Vértice Barigui"
+  "Sette Batel Tower"
 ];
 
 function acronymFromEmp(empreendimento: string) {
